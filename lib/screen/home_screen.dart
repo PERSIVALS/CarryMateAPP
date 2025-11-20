@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'remote_screen.dart';
+import 'cart_screen.dart';
+import 'profile_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -16,28 +18,20 @@ class _HomeScreenState extends State<HomeScreen> {
   Widget build(BuildContext context) {
     const primary = Color(0xFF2D4C6A); // deep blue from mock
 
-    return Scaffold(
-      backgroundColor: Colors.white,
-      body: SafeArea(
+    Widget body;
+    if (_currentIndex == 0) {
+      body = SafeArea(
         child: Column(
           children: [
-            // Top header (tappable "Remote" on right)
             _Header(primary: primary, onRemoteTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const RemoteScreen()))),
-
-            // Content
             Expanded(
               child: SingleChildScrollView(
                 padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    // Cart & battery card
                     _BatteryCartCard(primary: primary),
                     const SizedBox(height: 12),
-
-                    // (remote button moved to header)
-
-                    // Range & Weight
                     Row(
                       children: const [
                         Expanded(child: _StatChip(title: 'Range To User', value: '1.5M', icon: Icons.navigation_rounded)),
@@ -45,12 +39,9 @@ class _HomeScreenState extends State<HomeScreen> {
                         Expanded(child: _StatChip(title: 'Real Weight', value: '5Kg', icon: Icons.shopping_bag_outlined)),
                       ],
                     ),
-
                     const SizedBox(height: 20),
                     Text('Health Status', style: GoogleFonts.inter(fontSize: 16, fontWeight: FontWeight.w600, color: Colors.black87)),
                     const SizedBox(height: 12),
-
-                    // Health cards
                     Row(
                       children: const [
                         Expanded(child: _HealthCard(title: 'Calories', value: '107 KCAL', icon: Icons.local_fire_department_outlined)),
@@ -64,8 +55,17 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
           ],
         ),
-      ),
+      );
+    } else if (_currentIndex == 1) {
+      // Nest CartScreen scaffold inside body so bottom nav stays visible.
+      body = const CartScreen();
+    } else {
+      body = const ProfileScreen();
+    }
 
+    return Scaffold(
+      backgroundColor: Colors.white,
+      body: body,
       bottomNavigationBar: BottomNavigationBar(
         currentIndex: _currentIndex,
         onTap: (i) => setState(() => _currentIndex = i),
