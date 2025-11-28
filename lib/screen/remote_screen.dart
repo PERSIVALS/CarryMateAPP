@@ -1,6 +1,9 @@
 import 'package:flutter/material.dart';
+import 'dart:async';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:camera/camera.dart';
+import '../services/mqtt_service.dart';
+import 'dart:developer';
 
 class RemoteScreen extends StatefulWidget {
   const RemoteScreen({super.key});
@@ -14,6 +17,11 @@ class _RemoteScreenState extends State<RemoteScreen> {
   CameraController? _cameraController;
   List<CameraDescription>? _cameras;
   bool _cameraInitializing = false;
+  late MQTTService _mqtt;
+  bool _mqttReady = false;
+  String? _mqttError;
+  Timer? _holdTimer;
+  String? _holdingCommand;
 
   @override
   void initState() {
@@ -21,11 +29,13 @@ class _RemoteScreenState extends State<RemoteScreen> {
     if (_isAutomatic) {
       _initCamera();
     }
+    _setupMqtt();
   }
 
   @override
   void dispose() {
     _disposeCamera();
+    _stopHold();
     super.dispose();
   }
 
@@ -52,6 +62,52 @@ class _RemoteScreenState extends State<RemoteScreen> {
       await _cameraController?.dispose();
     } catch (_) {}
     _cameraController = null;
+  }
+
+  Future<void> _setupMqtt() async {
+    _mqtt = MQTTService();
+    try {
+      await _mqtt.connect();
+      if (mounted) setState(() { _mqttReady = true; });
+    } catch (e) {
+      if (mounted) setState(() { _mqttError = 'MQTT error: $e'; });
+    }
+  }
+
+  Future<void> _sendCommand(String cmd, {bool feedback = true, bool hold = false}) async {
+    try {
+      await _mqtt.publishCommand(cmd, hold: hold);
+      if (mounted && feedback) {
+        ScaffoldMessenger.of(context).clearSnackBars();
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Command: $cmd'), duration: const Duration(milliseconds: 500)),
+        );
+      }
+    } catch (e) {
+      log('Send command error: $e');
+      if (mounted && feedback) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Gagal: $cmd')),);
+      }
+    }
+  }
+
+  void _startHold(String cmd) {
+    _stopHold();
+    _holdingCommand = cmd;
+    // kirim segera sekali saat mulai (tanpa SnackBar agar tidak spam)
+    _sendCommand(cmd, feedback: false, hold: true);
+    _holdTimer = Timer.periodic(const Duration(milliseconds: 200), (_) {
+      if (_holdingCommand != null) {
+        _sendCommand(_holdingCommand!, feedback: false, hold: true);
+      }
+    });
+  }
+
+  void _stopHold() {
+    _holdTimer?.cancel();
+    _holdTimer = null;
+    _holdingCommand = null;
   }
 
   @override
@@ -109,6 +165,8 @@ class _RemoteScreenState extends State<RemoteScreen> {
                           if (_isAutomatic) {
                             setState(() => _isAutomatic = false);
                             await _disposeCamera();
+                            _sendCommand('MODE_MANUAL');
+                            _stopHold();
                           }
                         },
                         child: Column(
@@ -127,6 +185,8 @@ class _RemoteScreenState extends State<RemoteScreen> {
                           if (!_isAutomatic) {
                             setState(() => _isAutomatic = true);
                             await _initCamera();
+                            _sendCommand('MODE_AUTOMATIC');
+                            _stopHold();
                           }
                         },
                         child: Column(
@@ -185,24 +245,24 @@ class _RemoteScreenState extends State<RemoteScreen> {
       mainAxisAlignment: MainAxisAlignment.center,
       children: [
         // Up button
-        _DirectionButton(icon: Icons.arrow_upward, onPressed: () {}),
+        _HoldDirectionButton(icon: Icons.arrow_upward, onHoldStart: () => _startHold('UP'), onHoldEnd: _stopHold),
         const SizedBox(height: 18),
 
         // Left, center (invisible), right
         Row(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            _DirectionButton(icon: Icons.arrow_back, onPressed: () {}),
+            _HoldDirectionButton(icon: Icons.arrow_back, onHoldStart: () => _startHold('LEFT'), onHoldEnd: _stopHold),
             const SizedBox(width: 18),
             SizedBox(width: 84, height: 64),
             const SizedBox(width: 18),
-            _DirectionButton(icon: Icons.arrow_forward, onPressed: () {}),
+            _HoldDirectionButton(icon: Icons.arrow_forward, onHoldStart: () => _startHold('RIGHT'), onHoldEnd: _stopHold),
           ],
         ),
 
         const SizedBox(height: 18),
         // Down button
-        _DirectionButton(icon: Icons.arrow_downward, onPressed: () {}),
+        _HoldDirectionButton(icon: Icons.arrow_downward, onHoldStart: () => _startHold('DOWN'), onHoldEnd: _stopHold),
       ],
     );
   }
@@ -242,6 +302,13 @@ class _RemoteScreenState extends State<RemoteScreen> {
             ),
           ),
         ),
+        const SizedBox(height: 12),
+        if (!_mqttReady && _mqttError == null)
+          const Text('Menghubungkan MQTT...', style: TextStyle(color: Colors.black54))
+        else if (_mqttError != null)
+          Text(_mqttError!, style: const TextStyle(color: Colors.redAccent))
+        else
+          const Text('MQTT siap', style: TextStyle(color: Colors.green)),
 
         const SizedBox(height: 28),
         // Range card
@@ -277,28 +344,29 @@ class _RemoteScreenState extends State<RemoteScreen> {
       }
     }
 
-class _DirectionButton extends StatelessWidget {
-  const _DirectionButton({required this.icon, required this.onPressed});
+class _HoldDirectionButton extends StatelessWidget {
+  const _HoldDirectionButton({required this.icon, required this.onHoldStart, required this.onHoldEnd});
   final IconData icon;
-  final VoidCallback onPressed;
+  final VoidCallback onHoldStart;
+  final VoidCallback onHoldEnd;
 
   @override
   Widget build(BuildContext context) {
-    return SizedBox(
-      width: 84,
-      height: 64,
-      child: ElevatedButton(
-        onPressed: onPressed,
-        style: ElevatedButton.styleFrom(
-          elevation: 0,
-          backgroundColor: Colors.white,
-          shape: RoundedRectangleBorder(
+    return Listener(
+      onPointerDown: (_) => onHoldStart(),
+      onPointerUp: (_) => onHoldEnd(),
+      onPointerCancel: (_) => onHoldEnd(),
+      child: SizedBox(
+        width: 84,
+        height: 64,
+        child: DecoratedBox(
+          decoration: BoxDecoration(
+            color: Colors.white,
             borderRadius: BorderRadius.circular(14),
-            side: const BorderSide(color: Colors.black87, width: 2),
+            border: const Border.fromBorderSide(BorderSide(color: Colors.black87, width: 2)),
           ),
-          padding: EdgeInsets.zero,
+          child: Center(child: Icon(icon, color: Colors.black87, size: 28)),
         ),
-        child: Icon(icon, color: Colors.black87, size: 28),
       ),
     );
   }

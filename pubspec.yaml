@@ -43,6 +43,8 @@ dependencies:
   cloud_firestore: ^5.0.0
   google_fonts: ^6.1.0
   camera: ^0.10.0
+  mqtt_client: ^10.2.0
+  uuid: ^4.4.0
 
 dev_dependencies:
   flutter_test:
