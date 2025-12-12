@@ -3,6 +3,8 @@ import 'package:google_fonts/google_fonts.dart';
 import 'remote_screen.dart';
 import 'cart_screen.dart';
 import 'profile_screen.dart';
+import '../services/mqtt_service.dart';
+import '../models/telemetry_data.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -13,6 +15,30 @@ class HomeScreen extends StatefulWidget {
 
 class _HomeScreenState extends State<HomeScreen> {
   int _currentIndex = 0;
+  late MQTTService _mqtt;
+  bool _mqttInitialized = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _setupMqtt();
+  }
+
+  Future<void> _setupMqtt() async {
+    _mqtt = MQTTService();
+    try {
+      await _mqtt.connect();
+      if (mounted) setState(() => _mqttInitialized = true);
+    } catch (e) {
+      debugPrint('MQTT setup error: $e');
+    }
+  }
+
+  @override
+  void dispose() {
+    _mqtt.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -25,33 +51,32 @@ class _HomeScreenState extends State<HomeScreen> {
           children: [
             _Header(primary: primary, onRemoteTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const RemoteScreen()))),
             Expanded(
-              child: SingleChildScrollView(
-                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    _BatteryCartCard(primary: primary),
-                    const SizedBox(height: 12),
-                    Row(
-                      children: const [
-                        Expanded(child: _StatChip(title: 'Range To User', value: '1.5M', icon: Icons.navigation_rounded)),
-                        SizedBox(width: 12),
-                        Expanded(child: _StatChip(title: 'Real Weight', value: '5Kg', icon: Icons.shopping_bag_outlined)),
-                      ],
-                    ),
-                    const SizedBox(height: 20),
-                    Text('Health Status', style: GoogleFonts.inter(fontSize: 16, fontWeight: FontWeight.w600, color: Colors.black87)),
-                    const SizedBox(height: 12),
-                    Row(
-                      children: const [
-                        Expanded(child: _HealthCard(title: 'Calories', value: '107 KCAL', icon: Icons.local_fire_department_outlined)),
-                        SizedBox(width: 12),
-                        Expanded(child: _HealthCard(title: 'Steps', value: '1075 Steps', icon: Icons.directions_walk)),
-                      ],
-                    ),
-                  ],
-                ),
-              ),
+              child: _mqttInitialized
+                  ? StreamBuilder<TelemetryData>(
+                      stream: _mqtt.telemetryStream,
+                      initialData: TelemetryData(),
+                      builder: (context, snapshot) {
+                        final data = snapshot.data ?? TelemetryData();
+                        return SingleChildScrollView(
+                          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              _BatteryCartCard(primary: primary, battery: data.battery),
+                              const SizedBox(height: 12),
+                              Row(
+                                children: [
+                                  Expanded(child: _StatChip(title: 'Range To User', value: '${data.rangeToUser.toStringAsFixed(1)}M', icon: Icons.navigation_rounded)),
+                                  const SizedBox(width: 12),
+                                  Expanded(child: _StatChip(title: 'Real Weight', value: '${data.weight.toStringAsFixed(1)}Kg', icon: Icons.shopping_bag_outlined)),
+                                ],
+                              ),
+                            ],
+                          ),
+                        );
+                      },
+                    )
+                  : const Center(child: CircularProgressIndicator()),
             ),
           ],
         ),
@@ -133,8 +158,9 @@ class _Header extends StatelessWidget {
 }
 
 class _BatteryCartCard extends StatelessWidget {
-  const _BatteryCartCard({required this.primary});
+  const _BatteryCartCard({required this.primary, required this.battery});
   final Color primary;
+  final double battery;
 
   @override
   Widget build(BuildContext context) {
@@ -179,7 +205,7 @@ class _BatteryCartCard extends StatelessWidget {
                   width: 80,
                   height: 80,
                   child: CircularProgressIndicator(
-                    value: 0.85,
+                    value: battery / 100,
                     strokeWidth: 8,
                     backgroundColor: const Color(0xFFE9EEF4),
                     valueColor: AlwaysStoppedAnimation(primary),
@@ -188,7 +214,7 @@ class _BatteryCartCard extends StatelessWidget {
                 Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    Text('85%', style: GoogleFonts.inter(fontSize: 18, fontWeight: FontWeight.w700)),
+                    Text('${battery.toInt()}%', style: GoogleFonts.inter(fontSize: 18, fontWeight: FontWeight.w700)),
                     const SizedBox(height: 4),
                     const Icon(Icons.battery_charging_full_rounded, size: 18, color: Colors.black54),
                   ],
@@ -238,49 +264,6 @@ class _StatChip extends StatelessWidget {
             ),
             child: Text(value, style: GoogleFonts.inter(fontSize: 18, fontWeight: FontWeight.w700, color: Colors.white)),
           ),
-        ],
-      ),
-    );
-  }
-}
-
-class _HealthCard extends StatelessWidget {
-  const _HealthCard({required this.title, required this.value, required this.icon});
-  final String title;
-  final String value;
-  final IconData icon;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(16),
-        boxShadow: [
-          BoxShadow(color: Colors.black.withValues(alpha: 0.05), blurRadius: 10, offset: const Offset(0, 6)),
-        ],
-      ),
-      child: Row(
-        children: [
-          // circular icon
-          Container(
-            width: 48,
-            height: 48,
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              border: Border.all(color: const Color(0xFF2E7ECF), width: 4),
-            ),
-            child: Icon(icon, color: const Color(0xFF2E7ECF)),
-          ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Text(title, style: GoogleFonts.inter(fontSize: 14, fontWeight: FontWeight.w600)),
-              const SizedBox(height: 4),
-              Text(value, style: GoogleFonts.inter(fontSize: 12, color: Colors.black54)),
-            ]),
-          )
         ],
       ),
     );

@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'dart:async';
 import 'package:google_fonts/google_fonts.dart';
-import 'package:camera/camera.dart';
+import 'package:mobile_scanner/mobile_scanner.dart';
 import '../services/mqtt_service.dart';
 import 'dart:developer';
 
@@ -13,62 +13,75 @@ class RemoteScreen extends StatefulWidget {
 }
 
 class _RemoteScreenState extends State<RemoteScreen> {
-  bool _isAutomatic = true; // default to Automatic as in the mock
-  CameraController? _cameraController;
-  List<CameraDescription>? _cameras;
-  bool _cameraInitializing = false;
+  bool _isAutomatic = true;
   late MQTTService _mqtt;
   bool _mqttReady = false;
   String? _mqttError;
   Timer? _holdTimer;
   String? _holdingCommand;
+  MobileScannerController? _qrController;
+  String? _scannedQRCode;
+  bool _isQRScanMode = false;
+  bool _flashOn = false;
+  double _rangeToUser = 0.0; // Add range state
 
   @override
   void initState() {
     super.initState();
     if (_isAutomatic) {
-      _initCamera();
+      _initQRScanner();
     }
     _setupMqtt();
   }
 
   @override
   void dispose() {
-    _disposeCamera();
+    _qrController?.dispose();
     _stopHold();
     super.dispose();
   }
 
-  Future<void> _initCamera() async {
-    if (_cameraController != null) return;
-    setState(() => _cameraInitializing = true);
-    try {
-      _cameras = await availableCameras();
-      if (_cameras != null && _cameras!.isNotEmpty) {
-        final back = _cameras!.firstWhere((c) => c.lensDirection == CameraLensDirection.back, orElse: () => _cameras!.first);
-        _cameraController = CameraController(back, ResolutionPreset.medium, enableAudio: false);
-        await _cameraController!.initialize();
-      }
-    } catch (e) {
-      // ignore errors here but log
-      debugPrint('Camera init error: $e');
-    } finally {
-      if (mounted) setState(() => _cameraInitializing = false);
-    }
+  void _initQRScanner() {
+    _qrController?.dispose();
+    _qrController = MobileScannerController(
+      detectionSpeed: DetectionSpeed.noDuplicates,
+      facing: CameraFacing.back,
+      torchEnabled: _flashOn,
+      returnImage: false,
+    );
   }
 
-  Future<void> _disposeCamera() async {
-    try {
-      await _cameraController?.dispose();
-    } catch (_) {}
-    _cameraController = null;
+  void _toggleFlash() {
+    setState(() {
+      _flashOn = !_flashOn;
+      _qrController?.toggleTorch();
+    });
   }
+
+  void _toggleQRScanMode() {
+    setState(() {
+      _isQRScanMode = !_isQRScanMode;
+      _scannedQRCode = null; // Clear previous scan
+    });
+  }
+
+
 
   Future<void> _setupMqtt() async {
     _mqtt = MQTTService();
     try {
       await _mqtt.connect();
-      if (mounted) setState(() { _mqttReady = true; });
+      if (mounted) {
+        setState(() { _mqttReady = true; });
+        // Subscribe to telemetry stream
+        _mqtt.telemetryStream.listen((data) {
+          if (mounted) {
+            setState(() {
+              _rangeToUser = data.rangeToUser;
+            });
+          }
+        });
+      }
     } catch (e) {
       if (mounted) setState(() { _mqttError = 'MQTT error: $e'; });
     }
@@ -164,7 +177,8 @@ class _RemoteScreenState extends State<RemoteScreen> {
                         onTap: () async {
                           if (_isAutomatic) {
                             setState(() => _isAutomatic = false);
-                            await _disposeCamera();
+                            _qrController?.dispose();
+                            _qrController = null;
                             _sendCommand('MODE_MANUAL');
                             _stopHold();
                           }
@@ -184,7 +198,7 @@ class _RemoteScreenState extends State<RemoteScreen> {
                         onTap: () async {
                           if (!_isAutomatic) {
                             setState(() => _isAutomatic = true);
-                            await _initCamera();
+                            _initQRScanner();
                             _sendCommand('MODE_AUTOMATIC');
                             _stopHold();
                           }
@@ -268,40 +282,180 @@ class _RemoteScreenState extends State<RemoteScreen> {
   }
 
   Widget _buildAutomaticArea(BuildContext context) {
-    // Placeholder camera area + range card
-    return Column(
-      mainAxisAlignment: MainAxisAlignment.center,
-      children: [
-        // Camera preview placeholder - replace with actual camera widget later
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 24.0),
-          child: AspectRatio(
-            aspectRatio: 4 / 3,
-            child: ClipRRect(
-              borderRadius: BorderRadius.circular(16),
-              child: Container(
-                color: Colors.black,
-                child: _cameraController != null && _cameraController!.value.isInitialized
-                    ? CameraPreview(_cameraController!)
-                    : _cameraInitializing
-                        ? const Center(child: CircularProgressIndicator())
+    return SingleChildScrollView(
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          const SizedBox(height: 20),
+          // Camera Preview with controls
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 24.0),
+            child: Column(
+              children: [
+                // Camera preview area
+                AspectRatio(
+                  aspectRatio: 3 / 4,
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(16),
+                    child: _qrController != null
+                        ? Stack(
+                            children: [
+                              // Camera/Scanner view
+                              MobileScanner(
+                                controller: _qrController!,
+                                onDetect: _isQRScanMode ? (capture) {
+                                  final List<Barcode> barcodes = capture.barcodes;
+                                  if (barcodes.isNotEmpty) {
+                                    final barcode = barcodes.first;
+                                    if (barcode.rawValue != null && barcode.rawValue!.isNotEmpty) {
+                                      setState(() {
+                                        _scannedQRCode = barcode.rawValue;
+                                      });
+                                      log('QR Code detected: ${barcode.rawValue}');
+                                      // Send QR code to robot
+                                      _sendCommand('QR:${barcode.rawValue}');
+                                      // Show success feedback
+                                      ScaffoldMessenger.of(context).showSnackBar(
+                                        SnackBar(
+                                          content: Text('✓ QR Code: ${barcode.rawValue}'),
+                                          backgroundColor: Colors.green,
+                                          duration: const Duration(seconds: 2),
+                                        ),
+                                      );
+                                    }
+                                  }
+                                } : null,
+                              ),
+                              // QR Scan overlay (only show when in QR mode)
+                              if (_isQRScanMode)
+                                Center(
+                                  child: Container(
+                                    width: 250,
+                                    height: 250,
+                                    decoration: BoxDecoration(
+                                      border: Border.all(
+                                        color: _scannedQRCode != null ? Colors.green : Colors.white,
+                                        width: 4,
+                                      ),
+                                      borderRadius: BorderRadius.circular(16),
+                                    ),
+                                    child: Column(
+                                      mainAxisAlignment: MainAxisAlignment.center,
+                                      children: [
+                                        if (_scannedQRCode != null)
+                                          Container(
+                                            padding: const EdgeInsets.all(8),
+                                            decoration: BoxDecoration(
+                                              color: Colors.green,
+                                              borderRadius: BorderRadius.circular(8),
+                                            ),
+                                            child: const Icon(Icons.check_circle, color: Colors.white, size: 32),
+                                          ),
+                                      ],
+                                    ),
+                                  ),
+                                ),
+                              // Top controls
+                              Positioned(
+                                top: 12,
+                                left: 12,
+                                right: 12,
+                                child: Row(
+                                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                  children: [
+                                    // Flash toggle
+                                    _CameraControlButton(
+                                      icon: _flashOn ? Icons.flash_on : Icons.flash_off,
+                                      onTap: _toggleFlash,
+                                      active: _flashOn,
+                                    ),
+                                    // Mode indicator
+                                    Container(
+                                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                                      decoration: BoxDecoration(
+                                        color: Colors.black54,
+                                        borderRadius: BorderRadius.circular(20),
+                                      ),
+                                      child: Text(
+                                        _isQRScanMode ? '🔍 QR Scan' : '📷 Camera',
+                                        style: const TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.w600),
+                                      ),
+                                    ),
+                                    // QR scan mode toggle
+                                    _CameraControlButton(
+                                      icon: _isQRScanMode ? Icons.camera_alt : Icons.qr_code_scanner,
+                                      onTap: _toggleQRScanMode,
+                                      active: _isQRScanMode,
+                                    ),
+                                  ],
+                                ),
+                              ),
+                              // Bottom instruction text
+                              if (_isQRScanMode)
+                                Positioned(
+                                  bottom: 20,
+                                  left: 0,
+                                  right: 0,
+                                  child: Center(
+                                    child: Container(
+                                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                                      decoration: BoxDecoration(
+                                        color: Colors.black54,
+                                        borderRadius: BorderRadius.circular(20),
+                                      ),
+                                      child: const Text(
+                                        'Arahkan ke QR Code',
+                                        style: TextStyle(color: Colors.white, fontSize: 12),
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                            ],
+                          )
                         : Container(
                             color: Colors.grey.shade200,
                             child: const Center(
                               child: Column(
                                 mainAxisSize: MainAxisSize.min,
                                 children: [
-                                  Icon(Icons.videocam_outlined, size: 56, color: Colors.black38),
+                                  Icon(Icons.camera_alt, size: 56, color: Colors.black38),
                                   SizedBox(height: 8),
-                                  Text('Camera preview', style: TextStyle(color: Colors.black45)),
+                                  Text('Memuat Kamera...', style: TextStyle(color: Colors.black45)),
                                 ],
                               ),
                             ),
                           ),
-              ),
+                  ),
+                ),
+                const SizedBox(height: 16),
+                // Camera action buttons - simplified
+                if (_isQRScanMode)
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 40.0),
+                    child: Container(
+                      padding: const EdgeInsets.all(16),
+                      decoration: BoxDecoration(
+                        color: Colors.blue.shade50,
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(color: Colors.blue.shade200),
+                      ),
+                      child: Row(
+                        children: const [
+                          Icon(Icons.info_outline, color: Colors.blue, size: 20),
+                          SizedBox(width: 12),
+                          Expanded(
+                            child: Text(
+                              'Arahkan kamera ke QR Code untuk scan otomatis',
+                              style: TextStyle(fontSize: 12, color: Colors.black87),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+              ],
             ),
           ),
-        ),
         const SizedBox(height: 12),
         if (!_mqttReady && _mqttError == null)
           const Text('Menghubungkan MQTT...', style: TextStyle(color: Colors.black54))
@@ -310,18 +464,48 @@ class _RemoteScreenState extends State<RemoteScreen> {
         else
           const Text('MQTT siap', style: TextStyle(color: Colors.green)),
 
+        if (_scannedQRCode != null) ...[
+          const SizedBox(height: 16),
+          Container(
+            margin: const EdgeInsets.symmetric(horizontal: 24),
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: Colors.green.shade50,
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: Colors.green.shade300),
+            ),
+            child: Column(
+              children: [
+                const Icon(Icons.check_circle, color: Colors.green, size: 32),
+                const SizedBox(height: 8),
+                const Text('QR Code Scanned', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
+                const SizedBox(height: 4),
+                Text(
+                  _scannedQRCode!,
+                  style: const TextStyle(fontSize: 12, color: Colors.black87),
+                  textAlign: TextAlign.center,
+                  maxLines: 3,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ],
+            ),
+          ),
+        ],
+
         const SizedBox(height: 28),
         // Range card
         Column(
-          children: const [
-            Text('Range To User', style: TextStyle(color: Colors.black54, fontSize: 16)),
-            SizedBox(height: 6),
-            Text('1.5', style: TextStyle(fontSize: 28, fontWeight: FontWeight.w700)),
-            SizedBox(height: 4),
-            Text('Meter', style: TextStyle(color: Colors.black54)),
+          children: [
+            const Text('Range To User', style: TextStyle(color: Colors.black54, fontSize: 16)),
+            const SizedBox(height: 6),
+            Text('${_rangeToUser.toStringAsFixed(1)}', style: const TextStyle(fontSize: 28, fontWeight: FontWeight.w700)),
+            const SizedBox(height: 4),
+            const Text('Meter', style: TextStyle(color: Colors.black54)),
           ],
         ),
+        const SizedBox(height: 20),
       ],
+    ),
     );
   }
 }
@@ -344,28 +528,61 @@ class _RemoteScreenState extends State<RemoteScreen> {
       }
     }
 
-class _HoldDirectionButton extends StatelessWidget {
+class _HoldDirectionButton extends StatefulWidget {
   const _HoldDirectionButton({required this.icon, required this.onHoldStart, required this.onHoldEnd});
   final IconData icon;
   final VoidCallback onHoldStart;
   final VoidCallback onHoldEnd;
 
   @override
+  State<_HoldDirectionButton> createState() => _HoldDirectionButtonState();
+}
+
+class _HoldDirectionButtonState extends State<_HoldDirectionButton> {
+  bool _isPressed = false;
+
+  @override
   Widget build(BuildContext context) {
-    return Listener(
-      onPointerDown: (_) => onHoldStart(),
-      onPointerUp: (_) => onHoldEnd(),
-      onPointerCancel: (_) => onHoldEnd(),
-      child: SizedBox(
+    return GestureDetector(
+      onTapDown: (_) {
+        setState(() => _isPressed = true);
+        widget.onHoldStart();
+      },
+      onTapUp: (_) {
+        setState(() => _isPressed = false);
+        widget.onHoldEnd();
+      },
+      onTapCancel: () {
+        setState(() => _isPressed = false);
+        widget.onHoldEnd();
+      },
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 100),
         width: 84,
         height: 64,
-        child: DecoratedBox(
-          decoration: BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.circular(14),
-            border: const Border.fromBorderSide(BorderSide(color: Colors.black87, width: 2)),
+        decoration: BoxDecoration(
+          color: _isPressed ? const Color(0xFF2D4C6A) : Colors.white,
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(
+            color: _isPressed ? const Color(0xFF2D4C6A) : Colors.black87, 
+            width: 2,
           ),
-          child: Center(child: Icon(icon, color: Colors.black87, size: 28)),
+          boxShadow: _isPressed 
+            ? []
+            : [
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: 0.15),
+                  blurRadius: 6,
+                  offset: const Offset(0, 3),
+                ),
+              ],
+        ),
+        child: Center(
+          child: Icon(
+            widget.icon, 
+            color: _isPressed ? Colors.white : Colors.black87, 
+            size: 28,
+          ),
         ),
       ),
     );
@@ -390,6 +607,39 @@ class _BottomIcon extends StatelessWidget {
           borderRadius: BorderRadius.circular(14),
         ),
         child: Icon(icon, color: const Color(0xFF2D4C6A)),
+      ),
+    );
+  }
+}
+
+// Camera control button (flash, switch, etc)
+class _CameraControlButton extends StatelessWidget {
+  const _CameraControlButton({
+    required this.icon,
+    required this.onTap,
+    this.active = false,
+  });
+  
+  final IconData icon;
+  final VoidCallback onTap;
+  final bool active;
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(20),
+      child: Container(
+        padding: const EdgeInsets.all(8),
+        decoration: BoxDecoration(
+          color: active ? Colors.white : Colors.black54,
+          borderRadius: BorderRadius.circular(20),
+        ),
+        child: Icon(
+          icon,
+          color: active ? const Color(0xFF2D4C6A) : Colors.white,
+          size: 20,
+        ),
       ),
     );
   }

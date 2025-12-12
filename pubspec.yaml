@@ -45,6 +45,7 @@ dependencies:
   camera: ^0.10.0
   mqtt_client: ^10.2.0
   uuid: ^4.4.0
+  mobile_scanner: ^5.2.3
 
 dev_dependencies:
   flutter_test:
