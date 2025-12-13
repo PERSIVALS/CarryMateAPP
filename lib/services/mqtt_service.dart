@@ -9,16 +9,27 @@ import '../models/telemetry_data.dart';
 
 class MQTTService {
   final MqttServerClient _client;
+
+  // default bawaan
   final String commandTopic = 'carrymate/mobile/command';
   final String telemetryTopic = 'carrymate/robot/telemetry';
+
+  // tambahan untuk konfigurasi dinamis dari QR
+  String? _dynamicCommandTopic;
+  String? _dynamicTelemetryTopic;
+
   bool _connected = false;
   bool _connecting = false;
-  
-  final StreamController<TelemetryData> _telemetryController = StreamController<TelemetryData>.broadcast();
+
+  final StreamController<TelemetryData> _telemetryController =
+      StreamController<TelemetryData>.broadcast();
   Stream<TelemetryData> get telemetryStream => _telemetryController.stream;
 
   MQTTService()
-      : _client = MqttServerClient('broker.hivemq.com', 'carrymate-${const Uuid().v4()}') {
+      : _client = MqttServerClient(
+          'broker.hivemq.com',
+          'carrymate-${const Uuid().v4()}',
+        ) {
     _client.logging(on: false);
     _client.port = 1883; // unsecured port
     _client.keepAlivePeriod = 30;
@@ -27,6 +38,7 @@ class MQTTService {
     _client.onSubscribed = _onSubscribed;
   }
 
+  /// Method lama tetap ada
   Future<void> connect() async {
     if (_connected || _connecting) return;
     _connecting = true;
@@ -35,20 +47,42 @@ class MQTTService {
         .startClean()
         .withWillQos(MqttQos.atMostOnce);
     try {
+      log('MQTT connect() mulai...');
       await _client.connect();
+      log('MQTT connect() selesai, status=${_client.connectionStatus}');
       if (_client.connectionStatus?.state != MqttConnectionState.connected) {
         throw Exception('MQTT connect failed: ${_client.connectionStatus}');
       }
       _connected = true;
-      // Subscribe to telemetry after connected
-      _client.subscribe(telemetryTopic, MqttQos.atMostOnce);
+      final topic = _dynamicTelemetryTopic ?? telemetryTopic;
+      _client.subscribe(topic, MqttQos.atMostOnce);
+      log('Subscribed ke $topic');
       _client.updates!.listen(_onMessage);
     } catch (e) {
+      log('MQTT connect error: $e');
       _client.disconnect();
       rethrow;
     } finally {
       _connecting = false;
     }
+  }
+  
+  /// Method baru: connect dengan konfigurasi hasil QR
+  Future<void> connectWith({
+    required String broker,
+    required int port,
+    required String clientId,
+    required String telemetryTopic,
+    required String commandTopic,
+  }) async {
+    _dynamicTelemetryTopic = telemetryTopic;
+    _dynamicCommandTopic = commandTopic;
+
+    _client.server = broker;
+    _client.port = port;
+    _client.clientIdentifier = clientId;
+
+    await connect(); // tetap pakai logika connect() lama
   }
 
   bool get isConnected => _connected;
@@ -69,7 +103,10 @@ class MQTTService {
     final payload = jsonEncode(payloadMap);
     final builder = MqttClientPayloadBuilder();
     builder.addString(payload);
-    _client.publishMessage(commandTopic, MqttQos.atMostOnce, builder.payload!);
+
+    // pilih topic dinamis kalau ada
+    final topic = _dynamicCommandTopic ?? commandTopic;
+    _client.publishMessage(topic, MqttQos.atMostOnce, builder.payload!);
     log('MQTT publish: $payload');
   }
 
@@ -90,9 +127,12 @@ class MQTTService {
     for (final msg in messages) {
       final topic = msg.topic;
       final recMess = msg.payload as MqttPublishMessage;
-      final payload = MqttPublishPayload.bytesToStringAsString(recMess.payload.message);
-      
-      if (topic == telemetryTopic) {
+      final payload =
+          MqttPublishPayload.bytesToStringAsString(recMess.payload.message);
+
+      // pilih telemetry topic dinamis kalau ada
+      final expectedTopic = _dynamicTelemetryTopic ?? telemetryTopic;
+      if (topic == expectedTopic) {
         try {
           final json = jsonDecode(payload) as Map<String, dynamic>;
           final telemetry = TelemetryData.fromJson(json);

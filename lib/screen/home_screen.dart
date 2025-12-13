@@ -3,6 +3,7 @@ import 'package:google_fonts/google_fonts.dart';
 import 'remote_screen.dart';
 import 'cart_screen.dart';
 import 'profile_screen.dart';
+import 'qr_scan_screen.dart';
 import '../services/mqtt_service.dart';
 import '../models/telemetry_data.dart';
 
@@ -49,7 +50,7 @@ class _HomeScreenState extends State<HomeScreen> {
       body = SafeArea(
         child: Column(
           children: [
-            _Header(primary: primary, onRemoteTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const RemoteScreen()))),
+            _Header(primary: primary, onRemoteTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const QRScanScreen()))),
             Expanded(
               child: _mqttInitialized
                   ? StreamBuilder<TelemetryData>(

@@ -3,6 +3,8 @@ import 'package:google_fonts/google_fonts.dart';
 import 'login_screen.dart';
 import 'remote_screen.dart';
 import 'cart_screen.dart';
+import 'package:provider/provider.dart';
+import '../services/mqtt_service.dart';
 
 class UserHealth with ChangeNotifier {
   UserHealth({required this.name, required this.email, this.steps = 1075, this.calories = 107});
@@ -251,7 +253,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
                       runSpacing: 10,
                       children: [
                         _quickAction(Icons.settings_remote, 'Remote', () {
-                          Navigator.push(context, MaterialPageRoute(builder: (_) => const RemoteScreen()));
+                          final mqtt = context.read<MQTTService>();   // ambil instance dari Provider
+                          Navigator.push(context, MaterialPageRoute(builder: (_) => RemoteScreen(deviceId: 'default-device', mqtt: mqtt,)));
                         }),
                         _quickAction(Icons.shopping_cart, 'Cart 32', () {
                           Navigator.push(context, MaterialPageRoute(builder: (_) => const CartScreen()));

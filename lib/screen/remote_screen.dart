@@ -6,11 +6,15 @@ import '../services/mqtt_service.dart';
 import 'dart:developer';
 
 class RemoteScreen extends StatefulWidget {
-  const RemoteScreen({super.key});
+  final String deviceId; // tambahkan field ini
+  final MQTTService mqtt;
+
+  const RemoteScreen({super.key, required this.deviceId, required this.mqtt});
 
   @override
   State<RemoteScreen> createState() => _RemoteScreenState();
 }
+
 
 class _RemoteScreenState extends State<RemoteScreen> {
   bool _isAutomatic = true;
@@ -28,6 +32,7 @@ class _RemoteScreenState extends State<RemoteScreen> {
   @override
   void initState() {
     super.initState();
+    _mqtt = widget.mqtt;
     if (_isAutomatic) {
       _initQRScanner();
     }
